@@ -447,9 +447,90 @@ def run():
         check("http_metadata: status code captured", hm_result.observations.get("status_code") == 200)
         check("http_metadata: headers captured", "Server" in hm_result.observations.get("all_headers", {}))
 
-    # 10 · Live LLM check (optional) ────────────────────────────────
+    # 10 · Orchestrator & Registry (Stage 05) ───────────────────────
+    section("10 · Orchestrator & Registry (Stage 05)")
+
+    from recon.registry import RECON_TOOL_REGISTRY, get_tool, enabled_tool_ids
+    from recon.context import AssessmentContext
+    from recon.assessment import AssessmentResult, AssessmentStatus
+    from recon.orchestrator import run_assessment, EXECUTION_ORDER
+    from recon.contract import now_iso
+
+    expected_ids = {"http_metadata", "security_headers", "robots_sitemap",
+                    "link_discovery", "tls_metadata", "dns_info", "tech_fingerprint"}
+    check("registry contains exactly the 7 Stage-04 tools", set(RECON_TOOL_REGISTRY.keys()) == expected_ids)
+    check("enabled_tool_ids matches registry", set(enabled_tool_ids()) == expected_ids)
+    check("registry rejects unknown tool id", get_tool("nonexistent_tool") is None and get_tool("os.system") is None)
+
+    # AssessmentContext from config + overrides
+    ctx = AssessmentContext.create(tt)
+    check("context defaults from config", ctx.max_pages == config_module.config.recon.max_pages)
+    ctx_ovr = AssessmentContext.create(tt, {"max_pages": 3, "bogus_key": 1})
+    check("context overrides applied, unknown ignored", ctx_ovr.max_pages == 3 and not hasattr(ctx_ovr, "bogus_key"))
+    check("context cancellation flag", (lambda c: (c.cancel(), c.cancelled)[1])(AssessmentContext.create(tt)))
+
+    # now_iso helper
+    check("now_iso returns ISO string", isinstance(now_iso(), str) and "T" in now_iso())
+
+    # Full mocked end-to-end assessment
+    from unittest.mock import patch as _patch
+
+    def _mock_ok(name):
+        from recon.contract import ToolResult, ToolStatus
+        return ToolResult(tool_name=name, status=ToolStatus.SUCCESS)
+
+    _tool_paths = {
+        "dns_info": "recon.dns_info.run_dns_info",
+        "tls_metadata": "recon.tls_metadata.run_tls_metadata",
+        "http_metadata": "recon.http_metadata.run_http_metadata",
+        "security_headers": "recon.security_headers.run_security_headers",
+        "tech_fingerprint": "recon.tech_fingerprint.run_tech_fingerprint",
+        "link_discovery": "recon.link_discovery.run_link_discovery",
+        "robots_sitemap": "recon.robots_sitemap.run_robots_sitemap",
+    }
+    import contextlib as _contextlib
+    _call_order = []
+    with _contextlib.ExitStack() as _stack:
+        _stack.enter_context(_patch("recon.orchestrator.time.sleep"))
+        for _name, _path in _tool_paths.items():
+            def _recorder(n=_name):
+                def _fn(*a, **k):
+                    _call_order.append(n)
+                    return _mock_ok(n)
+                return _fn
+            _stack.enter_context(_patch(_path, side_effect=_recorder()))
+        _assess = run_assessment(tt)
+
+    check("assessment returns structured result", isinstance(_assess, AssessmentResult) and _assess.assessment_id)
+    check("assessment ran all 7 tools", len(_assess.tool_results) == 7)
+    check("assessment status completed", _assess.status == AssessmentStatus.COMPLETED)
+    check("assessment preserves execution order", _call_order == list(EXECUTION_ORDER))
+    check("assessment timestamps set", _assess.started_at != "" and _assess.completed_at != "")
+
+    # Failure isolation: one tool errors, others preserved
+    with _contextlib.ExitStack() as _stack:
+        _stack.enter_context(_patch("recon.orchestrator.time.sleep"))
+        for _name, _path in _tool_paths.items():
+            if _name == "tls_metadata":
+                _stack.enter_context(_patch(_path, side_effect=RuntimeError("boom")))
+            else:
+                _stack.enter_context(_patch(_path, return_value=_mock_ok(_name)))
+        _assess2 = run_assessment(tt)
+    check("failure isolation: partial status", _assess2.status == AssessmentStatus.PARTIAL)
+    check("failure isolation: errored tool recorded", _assess2.tool_results["tls_metadata"].status == ToolStatus.ERROR)
+    check("failure isolation: other tools preserved", _assess2.tool_results["dns_info"].status == ToolStatus.SUCCESS)
+
+    # Deadline: zero deadline skips everything
+    _assess3 = run_assessment(tt, overrides={"assessment_deadline": 0})
+    check("zero deadline skips all tools", _assess3.status == AssessmentStatus.FAILED and
+          all(r.status == ToolStatus.SKIPPED for r in _assess3.tool_results.values()))
+
+    # CLI exposes the recon menu option
+    check("CLI offers Run Recon Assessment", "Run Recon Assessment" in inspect.getsource(cli_module.cli))
+
+    # 11 · Live LLM check (optional) ────────────────────────────────
     if LIVE:
-        section("10 · Live LLM check (Gemini)")
+        section("11 · Live LLM check (Gemini)")
         try:
             live_cfg = load_config()
             if not live_cfg.gemini.is_configured:
@@ -465,9 +546,9 @@ def run():
         except Exception as e:
             check(f"Live Gemini call succeeded (error: {e})", False)
 
-    # 11 · Pytest suite ─────────────────────────────────────────────
+    # 12 · Pytest suite ─────────────────────────────────────────────
     if not SKIP_PYTEST:
-        section("11 · Pytest unit suite")
+        section("12 · Pytest unit suite")
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"],
             capture_output=True,

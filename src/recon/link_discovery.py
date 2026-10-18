@@ -46,14 +46,17 @@ class _LinkExtractor(HTMLParser):
                 self.links.append(src)
 
 
-def run_link_discovery(target: ValidatedTarget, html_body: str) -> ToolResult:
+def run_link_discovery(target: ValidatedTarget, html_body: str, base_url: str | None = None) -> ToolResult:
     """Parse HTML and return same-origin, deduplicated, normalized links.
 
     Args:
         target: The validated target for scope checking.
         html_body: The HTML content to parse.
+        base_url: URL used to resolve relative links. Defaults to the
+            target's normalized URL; pass the page URL when parsing a
+            sub-page during a crawl.
     """
-    base_url = target.parsed.normalized_url
+    base_url = base_url or target.parsed.normalized_url
     result = ToolResult(tool_name=TOOL_NAME, status=ToolStatus.ERROR, source_url=base_url)
 
     if not html_body or not html_body.strip():

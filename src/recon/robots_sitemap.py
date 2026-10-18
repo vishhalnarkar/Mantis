@@ -6,12 +6,11 @@ Listed paths are discovery hints only — never accessed automatically.
 
 from __future__ import annotations
 
-import requests
-
 from config import config
 from logger import get_logger
-from target import ValidatedTarget, validate_redirect
+from target import ValidatedTarget
 from recon.contract import ToolResult, ToolStatus
+from recon.http_utils import bounded_get, read_body
 
 log = get_logger("recon.robots_sitemap")
 
@@ -22,52 +21,14 @@ TIMEOUT = config.recon.request_timeout
 MAX_SITEMAP_URLS = 5
 
 
-def _bounded_get(url: str, target: ValidatedTarget) -> requests.Response | None:
-    """GET with scope-aware redirect validation and size cap."""
-    session = requests.Session()
-    current = url
-    for i in range(config.recon.max_redirects + 1):
-        try:
-            resp = session.get(
-                current, timeout=TIMEOUT, allow_redirects=False, stream=True,
-                headers={"User-Agent": "Mantis-Recon/1.0 (bounded, read-only)"},
-            )
-        except requests.exceptions.RequestException:
-            return None
-
-        if resp.status_code < 300 or resp.status_code >= 400:
-            return resp
-
-        location = resp.headers.get("Location", "")
-        if not location:
-            resp.close()
-            return None
-
-        if not location.startswith(("http://", "https://")):
-            base = f"{target.parsed.scheme}://{target.parsed.hostname}:{target.parsed.port}"
-            location = base + ("" if location.startswith("/") else "/") + location
-
-        ok, _ = validate_redirect(location, target, redirect_count=i + 1)
-        resp.close()
-        if not ok:
-            return None
-        current = location
-    return None
+def _bounded_get(url: str, target: ValidatedTarget):
+    """Scope-aware GET (delegates to shared http_utils)."""
+    return bounded_get(url, target)
 
 
-def _read_body(resp: requests.Response) -> tuple[str, bool]:
+def _read_body(resp) -> tuple[str, bool]:
     """Read up to MAX_BODY bytes. Returns (text, truncated)."""
-    chunks = []
-    size = 0
-    truncated = False
-    for chunk in resp.iter_content(chunk_size=8192):
-        size += len(chunk)
-        chunks.append(chunk)
-        if size > MAX_BODY:
-            truncated = True
-            break
-    resp.close()
-    return b"".join(chunks).decode("utf-8", errors="replace"), truncated
+    return read_body(resp, MAX_BODY)
 
 
 def run_robots_sitemap(target: ValidatedTarget) -> ToolResult:

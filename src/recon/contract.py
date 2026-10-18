@@ -18,6 +18,12 @@ class ToolStatus(str, Enum):
     UNAVAILABLE = "unavailable"
     BLOCKED = "blocked"
     ERROR = "error"
+    SKIPPED = "skipped"
+
+
+def now_iso() -> str:
+    """Current UTC time as an ISO-8601 string (second precision)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 @dataclass
@@ -35,13 +41,9 @@ class ToolResult:
 
     def __post_init__(self):
         if not self.started_at:
-            self.started_at = _now()
+            self.started_at = now_iso()
         if not self.completed_at:
-            self.completed_at = _now()
+            self.completed_at = now_iso()
 
     def mark_completed(self):
-        self.completed_at = _now()
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.completed_at = now_iso()

@@ -19,6 +19,15 @@ def executor(tool_name: str, arguments: dict):
     log.debug("Tool '%s' found. Executing...", tool_name)
     console.print(f"[info]⏳ Running tool: [accent]{tool_name}[/]...[/]")
     tool_function = TOOL_REGISTRY[tool_name]
-    result = tool_function(**arguments)
+    try:
+        result = tool_function(**arguments)
+    except Exception as e:
+        log.exception("Tool '%s' raised an unexpected error: %s", tool_name, e)
+        console.print(f"[error]✘ Tool '{tool_name}' crashed: {e}[/]")
+        return {
+            "status": "error",
+            "summary": f"Tool '{tool_name}' raised an unexpected error.",
+            "errors": [str(e)],
+        }
     log.info("Tool '%s' finished with status: %s", tool_name, result.get("status"))
     return result

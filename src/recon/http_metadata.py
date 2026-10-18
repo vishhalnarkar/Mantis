@@ -99,16 +99,21 @@ def run_http_metadata(target: ValidatedTarget) -> ToolResult:
             current_url = location
             response.close()
 
-        # Read body up to size limit
+        # Read body up to size limit. The body text is kept so the
+        # orchestrator can reuse it for link discovery and tech
+        # fingerprinting without a second request.
+        body_chunks: list[bytes] = []
         body_size = 0
         truncated = False
         for chunk in response.iter_content(chunk_size=8192):
-            body_size += len(chunk)
-            if body_size > MAX_BODY_READ:
+            if body_size + len(chunk) > MAX_BODY_READ:
                 truncated = True
                 result.limits_applied.append(f"response_size_capped_at_{MAX_BODY_READ}")
                 break
+            body_size += len(chunk)
+            body_chunks.append(chunk)
         response.close()
+        body_text = b"".join(body_chunks).decode("utf-8", errors="replace")
 
         # Collect observations
         headers_lower = {k.lower(): v for k, v in response.headers.items()}
@@ -126,6 +131,7 @@ def run_http_metadata(target: ValidatedTarget) -> ToolResult:
             "truncated": truncated,
             "selected_headers": selected,
             "all_headers": dict(response.headers),
+            "body_text": body_text,
         }
 
         if result.errors:

@@ -40,6 +40,8 @@ class ReconConfig:
     max_pages: int = 10                    # bounded crawl limit
     max_depth: int = 2                     # bounded crawl depth
     request_delay: float = 0.5             # seconds between requests
+    tool_timeout: float = 30.0             # seconds per tool step
+    assessment_deadline: float = 120.0     # seconds for the whole assessment
 
 
 @dataclass(frozen=True)
