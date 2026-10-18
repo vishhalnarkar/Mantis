@@ -16,4 +16,4 @@ def analyze_logs(log_text):
         "errors": []
     }
 
-print(analyze_logs(input("Give Log: ")))
+# print(analyze_logs(input("Give Log: ")))

@@ -7,3 +7,5 @@ requests
 python-dotenv
 pandas
 pytest
+groq
+python-dotenv
