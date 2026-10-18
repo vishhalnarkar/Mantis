@@ -30,11 +30,19 @@ class GeminiConfig:
 
 
 @dataclass(frozen=True)
+class ReconConfig:
+    """Reconnaissance scope and safety settings."""
+    block_private_targets: bool = True
+    max_redirects: int = 10
+    allowed_schemes: tuple = ("http", "https")
+    request_timeout: float = 15.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application configuration."""
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
-    # Future stages will add recon limits here:
-    # request_timeout, max_redirects, max_pages, max_depth, etc.
+    recon: ReconConfig = field(default_factory=ReconConfig)
 
 
 def load_config() -> AppConfig:
@@ -51,8 +59,12 @@ def load_config() -> AppConfig:
     if not model:
         log.warning("GEMINI_MODEL is not set. LLM-dependent features will be unavailable.")
 
+    # Recon settings (future: load from env/overrides)
+    recon = ReconConfig()
+
     return AppConfig(
         gemini=GeminiConfig(api_key=api_key, model=model),
+        recon=recon,
     )
 
 

@@ -30,6 +30,11 @@ from tools.registry import TOOL_REGISTRY
 from tools.executor import executor
 from tools.log_analyzer import analyze_logs
 import llm.comms as comms
+import socket as _socket
+import inspect
+from unittest.mock import patch
+import target as target_module
+import cli as cli_module
 
 LIVE = "--live" in sys.argv
 SKIP_PYTEST = "--skip-pytest" in sys.argv
@@ -120,7 +125,7 @@ def run():
 
         os.environ.pop("GEMINI_API_KEY", None)
         cfg_missing = load_config()
-        check("is_configured False when key missing", not cfg_missing.is_configured)
+        check("is_configured False when key missing", not cfg_missing.gemini.is_configured)
 
         check("AppConfig default gemini unconfigured", not AppConfig().gemini.is_configured)
         check("config singleton exposed", isinstance(config_module.config, AppConfig))
@@ -196,6 +201,7 @@ def run():
 
         # Lazy client requires config
         comms._client = None
+        comms.config = AppConfig(gemini=GeminiConfig())
         try:
             comms._get_client()
             check("_get_client fails when unconfigured", False)
@@ -242,9 +248,116 @@ def run():
     except Exception as e:
         check(f"Entry point file loadable (error: {e})", False)
 
-    # 8 · Live LLM check (optional) ─────────────────────────────────
+    # 8 · Target Validation (Stage 03) ──────────────────────────────
+    section("8 · Target Validation (Stage 03)")
+
+    # Pure parsing / normalization
+    p = target_module.parse_url("HTTP://EXAMPLE.com/Path#frag")
+    check("parse: scheme lowercased", isinstance(p, target_module.ParsedTarget) and p.scheme == "http")
+    check("parse: hostname lowercased", p.hostname == "example.com")
+    check("parse: default port applied", p.port == 80)
+    check("parse: fragment removed", "#" not in p.normalized_url)
+
+    p2 = target_module.parse_url("https://example.com")
+    check("parse: https default port 443", p2.port == 443)
+
+    p3 = target_module.parse_url("https://example.com:8443/x?q=1")
+    check("parse: explicit port kept", p3.port == 8443)
+    check("parse: query preserved", p3.query == "q=1")
+
+    for bad, expected_code in [
+        ("", target_module.TargetErrorCode.MALFORMED_URL),
+        ("example.com", target_module.TargetErrorCode.MISSING_SCHEME),
+        ("ftp://example.com", target_module.TargetErrorCode.UNSUPPORTED_SCHEME),
+        ("file:///etc/passwd", target_module.TargetErrorCode.UNSUPPORTED_SCHEME),
+        ("http://user:pass@example.com", target_module.TargetErrorCode.EMBEDDED_CREDENTIALS),
+        ("http://example.com:99999/", target_module.TargetErrorCode.INVALID_PORT),
+        ("http://", target_module.TargetErrorCode.MISSING_HOST),
+    ]:
+        r = target_module.parse_url(bad)
+        check(f"parse rejects {bad!r}", isinstance(r, target_module.TargetValidationError) and r.code == expected_code)
+
+    # IP classification
+    for ip, want_public, want_reason in [
+        ("93.184.216.34", True, "public"),
+        ("127.0.0.1", False, "loopback"),
+        ("10.0.0.1", False, "private"),
+        ("192.168.1.1", False, "private"),
+        ("169.254.1.1", False, "link_local"),
+        ("0.0.0.0", False, "unspecified"),
+        ("224.0.0.1", False, "multicast"),
+        ("::1", False, "loopback"),
+        ("fe80::1", False, "link_local"),
+    ]:
+        c = target_module.classify_ip(ip)
+        check(f"classify {ip} -> {want_reason}", c.is_public == want_public and c.reason == want_reason)
+
+    # DNS resolution (mocked)
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.return_value = [(2, 1, 6, "", ("93.184.216.34", 0))]
+        res = target_module.resolve_hostname("example.com")
+        check("resolve: public host allowed", not res.blocked and res.addresses == ("93.184.216.34",))
+
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.return_value = [(2, 1, 6, "", ("192.168.0.1", 0))]
+        res = target_module.resolve_hostname("internal.example.com")
+        check("resolve: private host blocked", res.blocked)
+
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.return_value = [
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("10.0.0.5", 0)),
+        ]
+        res = target_module.resolve_hostname("mixed.example.com")
+        check("resolve: mixed answers blocked", res.blocked)
+
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.return_value = []
+        res = target_module.resolve_hostname("empty.example.com")
+        check("resolve: empty answer blocked", res.blocked)
+
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.side_effect = _socket.gaierror("NXDOMAIN")
+        res = target_module.resolve_hostname("nxdomain.example.com")
+        check("resolve: NXDOMAIN blocked", res.blocked)
+
+    res = target_module.resolve_hostname("127.0.0.1")
+    check("resolve: loopback literal blocked (no DNS)", res.blocked)
+
+    # Full validate_target + redirect policy (mocked DNS)
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.return_value = [(2, 1, 6, "", ("93.184.216.34", 0))]
+        vt = target_module.validate_target("https://example.com/")
+        check("validate_target: public target accepted", isinstance(vt, target_module.ValidatedTarget))
+        check("validate_target: allowed origin set", vt.allowed_origin == ("https", "example.com", 443))
+
+        ok, _ = target_module.validate_redirect("https://example.com/about", vt)
+        check("redirect: same origin allowed", ok)
+        ok, _ = target_module.validate_redirect("https://other.com/", vt)
+        check("redirect: different host blocked", not ok)
+        ok, _ = target_module.validate_redirect("https://example.com:8443/", vt)
+        check("redirect: different port blocked", not ok)
+        ok, _ = target_module.validate_redirect("http://example.com/", vt)
+        check("redirect: scheme change blocked", not ok)
+        ok, _ = target_module.validate_redirect("https://example.com/", vt, redirect_count=10, max_redirects=10)
+        check("redirect: limit exceeded blocked", not ok)
+        ok, _ = target_module.validate_redirect("ftp://example.com/", vt)
+        check("redirect: invalid scheme blocked", not ok)
+
+    vt_loopback = target_module.validate_target("http://127.0.0.1/")
+    check("validate_target: loopback rejected", isinstance(vt_loopback, target_module.TargetValidationError))
+
+    with patch("target.socket.getaddrinfo") as gai:
+        gai.return_value = [(2, 1, 6, "", ("10.1.2.3", 0))]
+        vt_priv = target_module.validate_target("https://internal.corp/")
+        check("validate_target: private DNS rejected", isinstance(vt_priv, target_module.TargetValidationError))
+
+    # CLI exposes the new menu option
+    check("CLI menu offers target validation", "Validate Target URL" in inspect.getsource(cli_module.cli))
+
+    # 9 · Live LLM check (optional) ─────────────────────────────────
     if LIVE:
-        section("8 · Live LLM check (Gemini)")
+        section("9 · Live LLM check (Gemini)")
         try:
             live_cfg = load_config()
             if not live_cfg.gemini.is_configured:
@@ -260,9 +373,9 @@ def run():
         except Exception as e:
             check(f"Live Gemini call succeeded (error: {e})", False)
 
-    # 9 · Pytest suite ──────────────────────────────────────────────
+    # 10 · Pytest suite ─────────────────────────────────────────────
     if not SKIP_PYTEST:
-        section("9 · Pytest unit suite")
+        section("10 · Pytest unit suite")
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"],
             capture_output=True,
