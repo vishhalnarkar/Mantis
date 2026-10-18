@@ -32,9 +32,17 @@ from tools.log_analyzer import analyze_logs
 import llm.comms as comms
 import socket as _socket
 import inspect
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import target as target_module
 import cli as cli_module
+from recon.contract import ToolResult, ToolStatus
+from recon.http_metadata import run_http_metadata
+from recon.security_headers import run_security_headers
+from recon.robots_sitemap import run_robots_sitemap
+from recon.link_discovery import run_link_discovery
+from recon.tls_metadata import run_tls_metadata
+from recon.dns_info import run_dns_info
+from recon.tech_fingerprint import run_tech_fingerprint
 
 LIVE = "--live" in sys.argv
 SKIP_PYTEST = "--skip-pytest" in sys.argv
@@ -355,9 +363,93 @@ def run():
     # CLI exposes the new menu option
     check("CLI menu offers target validation", "Validate Target URL" in inspect.getsource(cli_module.cli))
 
-    # 9 · Live LLM check (optional) ─────────────────────────────────
+    # 9 · Recon Tools (Stage 04) ────────────────────────────────────
+    section("9 · Recon Tools (Stage 04)")
+
+    # Helper to create a test target
+    from target import ParsedTarget, ResolutionResult, IPClassification, ValidatedTarget
+
+    def _test_target(scheme="https", hostname="example.com", port=443):
+        parsed = ParsedTarget(
+            original_url=f"{scheme}://{hostname}/",
+            normalized_url=f"{scheme}://{hostname}/",
+            scheme=scheme, hostname=hostname, port=port, path="/", query="",
+        )
+        resolution = ResolutionResult(
+            hostname=hostname, addresses=("93.184.216.34",), blocked=False,
+            classifications=(IPClassification(ip="93.184.216.34", is_public=True, reason="public"),),
+        )
+        return ValidatedTarget(parsed=parsed, resolution=resolution, allowed_origin=(scheme, hostname, port))
+
+    tt = _test_target()
+
+    # Contract
+    tr = ToolResult(tool_name="test", status=ToolStatus.SUCCESS)
+    check("ToolResult has required fields", tr.tool_name == "test" and tr.started_at != "")
+    check("ToolStatus enum values", ToolStatus.SUCCESS == "success" and ToolStatus.ERROR == "error")
+
+    # Security headers (pure, no network)
+    sh_result = run_security_headers(tt, {"Strict-Transport-Security": "max-age=31536000", "X-Frame-Options": "DENY"})
+    check("security_headers: detects present headers", sh_result.status == ToolStatus.SUCCESS and sh_result.observations["present_count"] == 2)
+    check("security_headers: detects missing headers", sh_result.observations["missing_count"] == 4)
+
+    sh_none = run_security_headers(tt, None)
+    check("security_headers: unavailable without input", sh_none.status == ToolStatus.UNAVAILABLE)
+
+    # Link discovery (pure, no network)
+    html = '<html><a href="/about">A</a><a href="https://evil.com">B</a><a href="javascript:void(0)">C</a></html>'
+    ld_result = run_link_discovery(tt, html)
+    check("link_discovery: same-origin links found", ld_result.status == ToolStatus.SUCCESS and ld_result.observations["same_origin_count"] >= 1)
+    check("link_discovery: other-origin filtered", ld_result.observations["skipped_other_origin"] >= 1)
+    check("link_discovery: non-http ignored", ld_result.observations["skipped_non_http"] >= 1)
+
+    ld_empty = run_link_discovery(tt, "")
+    check("link_discovery: empty HTML -> unavailable", ld_empty.status == ToolStatus.UNAVAILABLE)
+
+    # Tech fingerprint (pure, no network)
+    tf_result = run_tech_fingerprint(tt, headers={"Server": "nginx/1.21"}, html_body='<script src="/wp-content/themes/x/style.css"></script>')
+    check("tech_fingerprint: detects nginx", tf_result.status == ToolStatus.SUCCESS and any(f["technology"] == "Nginx" for f in tf_result.observations["findings"]))
+    check("tech_fingerprint: detects WordPress", any(f["technology"] == "WordPress" for f in tf_result.observations["findings"]))
+    check("tech_fingerprint: confidence labels valid", all(f["confidence"] in ("likely", "possible") for f in tf_result.observations["findings"]))
+    check("tech_fingerprint: evidence traceability", all("signal_source" in f and "rationale" in f for f in tf_result.observations["findings"]))
+
+    tf_none = run_tech_fingerprint(tt, headers=None, html_body=None)
+    check("tech_fingerprint: no input -> unavailable", tf_none.status == ToolStatus.UNAVAILABLE)
+
+    # TLS metadata (HTTP target -> unavailable)
+    http_target = _test_target(scheme="http", hostname="example.com", port=80)
+    tls_result = run_tls_metadata(http_target)
+    check("tls_metadata: HTTP target -> unavailable", tls_result.status == ToolStatus.UNAVAILABLE)
+
+    # DNS info (uses real resolution for example.com — safe public host)
+    dns_result = run_dns_info(tt)
+    check("dns_info: returns structured result", dns_result.tool_name == "dns_info" and isinstance(dns_result.observations, dict))
+    check("dns_info: A or AAAA records present", len(dns_result.observations.get("a_records", []) + dns_result.observations.get("aaaa_records", [])) > 0 or dns_result.status == ToolStatus.ERROR)
+    check("dns_info: MX/NS/TXT marked unavailable", dns_result.observations.get("mx_records") is None)
+
+    # HTTP metadata with mocked requests
+    with patch("recon.http_metadata.requests.Session") as mock_sess_cls:
+        mock_sess = MagicMock()
+        mock_sess_cls.return_value = mock_sess
+
+        class _FakeResp:
+            status_code = 200
+            headers = {"Content-Type": "text/html", "Server": "nginx"}
+            content = b"<html>test</html>"
+            url = "https://example.com/"
+            def iter_content(self, chunk_size=8192):
+                yield self.content
+            def close(self): pass
+
+        mock_sess.get.return_value = _FakeResp()
+        hm_result = run_http_metadata(tt)
+        check("http_metadata: mocked success", hm_result.status == ToolStatus.SUCCESS)
+        check("http_metadata: status code captured", hm_result.observations.get("status_code") == 200)
+        check("http_metadata: headers captured", "Server" in hm_result.observations.get("all_headers", {}))
+
+    # 10 · Live LLM check (optional) ────────────────────────────────
     if LIVE:
-        section("9 · Live LLM check (Gemini)")
+        section("10 · Live LLM check (Gemini)")
         try:
             live_cfg = load_config()
             if not live_cfg.gemini.is_configured:
@@ -373,9 +465,9 @@ def run():
         except Exception as e:
             check(f"Live Gemini call succeeded (error: {e})", False)
 
-    # 10 · Pytest suite ─────────────────────────────────────────────
+    # 11 · Pytest suite ─────────────────────────────────────────────
     if not SKIP_PYTEST:
-        section("10 · Pytest unit suite")
+        section("11 · Pytest unit suite")
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q"],
             capture_output=True,

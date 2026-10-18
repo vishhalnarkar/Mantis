@@ -36,6 +36,10 @@ class ReconConfig:
     max_redirects: int = 10
     allowed_schemes: tuple = ("http", "https")
     request_timeout: float = 15.0
+    max_response_size: int = 512_000       # bytes
+    max_pages: int = 10                    # bounded crawl limit
+    max_depth: int = 2                     # bounded crawl depth
+    request_delay: float = 0.5             # seconds between requests
 
 
 @dataclass(frozen=True)
