@@ -1,7 +1,6 @@
-DevLogs
+# Environment
 .env
 .venv
-cmd.txt
 
 # Python
 __pycache__/
@@ -12,6 +11,10 @@ __pycache__/
 .pytest_cache/
 
 # Application outputs
-mantis.log
+data/
 reports/
+mantis.log
 *.db
+
+# Dev logs (too large for GitHub)
+DevLogs/

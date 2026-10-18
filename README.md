@@ -1,106 +1,99 @@
 # Mantis
 
-A CLI-based cybersecurity assistant (CyberSec AI Agent). Mantis performs
-**bounded, passive website reconnaissance** against a target you own or are
-explicitly authorized to assess, stores redacted evidence locally, optionally
-interprets it with Gemini, and generates reproducible Markdown reports. It
-also includes a cybersecurity Q&A chatbot and a basic log analyzer.
+A CLI-based cybersecurity reconnaissance tool that validates targets, runs bounded passive recon, persists evidence, and uses AI to interpret findings.
 
-Active penetration testing and exploitation are **not** part of this project.
+## Quick Start
 
-## Capabilities
-
-| Menu | Feature | Notes |
-|---|---|---|
-| 1 | Analyze Logs | Line-counting log text analysis via the tool registry |
-| 2 | Validate Target URL | Scope gate: scheme, IP class, DNS, redirect policy |
-| 3 | Run Recon Assessment | 7 tools, serial, deadline-bounded; auto-saved to SQLite |
-| 4 | ChatBot | Gemini Q&A; bounded history; never triggers scans |
-| 5 | Interpret Saved Assessment (AI) | Optional Gemini interpretation of stored evidence |
-| 6 | Generate Report | Deterministic Markdown report from stored evidence |
-| 7 | Exit | |
-
-Safety model:
-
-- Only `http`/`https` targets; private, loopback, link-local, reserved,
-  multicast, and unspecified IPs are blocked by default.
-- Redirects are re-validated and must stay on the same origin.
-- Read-only GET requests only; response sizes, page counts, and total
-  assessment time are bounded.
-- Sensitive headers are redacted before persistence; page bodies are never
-  persisted or sent to the model.
-- Chatbot mode is strictly separated from reconnaissance (no tool execution
-  from chat text).
-
-## Requirements
-
-- Python 3.12+ (verified on 3.12.0, Windows)
-- Dependencies: `rich`, `requests`, `python-dotenv`, `pytest`, `openai`
-
-## Setup
-
-```powershell
+```bash
+# 1. Set up environment
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # Linux/macOS
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# Configure secrets (never commit .env)
-Copy-Item .env.example .env
-# then edit .env: GEMINI_API_KEY=... and GEMINI_MODEL=...
+# 3. Configure API keys
+cp .env.example .env
+# Edit .env with your GEMINI_API_KEY and GEMINI_MODEL
+
+# 4. Run
+python -m src
 ```
 
-Without a configured key, all deterministic features (options 1–3, 6) still
-work; options 4 and 5 report the missing configuration clearly.
+## Project Structure
 
-## Usage
-
-```powershell
-python src\__main__.py     # interactive CLI menu
 ```
+Mantis/
+├── src/
+│   ├── __main__.py          # Entry point (python -m src)
+│   ├── cli.py               # Interactive CLI menu
+│   ├── config.py            # Centralized configuration from .env
+│   ├── logger.py            # Color-coded terminal logging via rich
+│   ├── target.py            # URL validation, DNS resolution, scope control
+│   ├── quick_scan.py        # End-to-end pipeline (validate → recon → save → AI)
+│   │
+│   ├── analysis/            # AI evidence interpretation (Stage 07)
+│   │   ├── analyzer.py      # Gemini-based evidence analyzer
+│   │   ├── evidence_package.py  # Bounded evidence packaging for LLM
+│   │   ├── models.py        # InterpretationResult, KeyObservation, etc.
+│   │   └── prompt.py        # Versioned system/user prompts
+│   │
+│   ├── chatbot/             # Cybersecurity Q&A chatbot (Stage 09)
+│   │   ├── prompt.py        # Chatbot system prompt
+│   │   └── session.py       # Conversation state management
+│   │
+│   ├── llm/                 # LLM communication layer
+│   │   └── comms.py         # OpenAI-compatible client (Gemini)
+│   │
+│   ├── recon/               # Reconnaissance toolkit (Stages 04-05)
+│   │   ├── orchestrator.py  # Bounded assessment runner
+│   │   ├── registry.py      # Tool registry (7 recon tools)
+│   │   ├── context.py       # Assessment limits & deadlines
+│   │   ├── contract.py      # ToolResult data contract
+│   │   ├── assessment.py    # AssessmentResult model
+│   │   ├── http_utils.py    # Shared HTTP helpers
+│   │   ├── dns_info.py      # DNS record collection
+│   │   ├── http_metadata.py # HTTP response inspection
+│   │   ├── link_discovery.py# Same-origin link discovery
+│   │   ├── robots_sitemap.py# robots.txt & sitemap parsing
+│   │   ├── security_headers.py # Security header analysis
+│   │   ├── tech_fingerprint.py # Technology fingerprinting
+│   │   └── tls_metadata.py  # TLS certificate inspection
+│   │
+│   ├── reporting/           # Markdown report generation (Stage 08)
+│   │   └── generator.py     # Deterministic, escaped report renderer
+│   │
+│   └── storage/             # SQLite evidence persistence (Stage 06)
+│       ├── models.py        # EvidenceAssessment, EvidenceToolRun
+│       ├── redaction.py     # Secret/header redaction utilities
+│       └── store.py         # SQLite-backed evidence store
+│
+├── tests/                   # Pytest test suite
+├── DevLogs/                 # Stage-by-stage development documentation
+├── .env.example             # Template for environment variables
+├── pytest.ini               # Pytest configuration
+├── requirements.txt         # Python dependencies
+└── README.md                # This file
+```
+
+## Features
+
+- **Quick Scan** — One command runs the full pipeline: target validation → 7 recon tools → evidence persistence → AI analysis
+- **Bounded Recon** — Time-limited, depth-limited, page-limited passive reconnaissance
+- **Safety Gates** — Blocks private/loopback targets, validates redirects, never follows instructions in untrusted web content
+- **AI Interpretation** — Gemini analyzes evidence with citation tracking and hypothesis labeling
+- **Evidence Persistence** — SQLite storage with automatic secret redaction
+- **Report Generation** — Deterministic Markdown reports with escaped untrusted content
+- **Cybersecurity Chatbot** — Q&A mode that never triggers scans
 
 ## Testing
 
-```powershell
-python test.py               # master suite: integration + pytest (offline, mocked)
-python test.py --live        # additionally hits the real Gemini API (uses quota)
-python test.py --skip-pytest # integration checks only
-pytest                       # unit tests only
+```bash
+pytest                    # Run all tests
+pytest tests/test_target.py -v  # Run specific test file
 ```
 
-## Project Layout
+## License
 
-```
-src/
-├── __main__.py            # Entry point
-├── cli.py                 # Interactive menu (options 1-7)
-├── config.py              # Centralized .env-backed configuration
-├── logger.py              # Rich terminal logging (no log files)
-├── target.py              # Scope gate: URL/IP/DNS/redirect validation
-├── llm/comms.py           # Gemini client (OpenAI-compatible endpoint)
-├── tools/                 # Generic tool registry + executor + log analyzer
-├── recon/                 # 7 recon tools, shared contract, orchestrator
-├── storage/               # SQLite evidence store + redaction (schema v1)
-├── analysis/              # Gemini evidence interpretation (prompt v1)
-├── reporting/             # Deterministic Markdown report generator (format v1)
-└── chatbot/               # Bounded Q&A session + versioned prompt
-tests/                     # pytest unit tests (all mocked, no API key needed)
-test.py                    # Master test runner (all stages)
-```
-
-## Data locations
-
-- Evidence + interpretations: `data/evidence.db` (SQLite, WAL mode)
-- Generated reports: `reports/*.md` (created on demand; git-ignored)
-- Both directories are local-only and excluded from version control.
-
-## Limitations
-
-- Reconnaissance is passive and bounded; a missing check never proves a
-  site is secure, and findings are observations, not confirmed vulnerabilities.
-- AI interpretation is optional, labeled as such, and validated against the
-  stored evidence; unsupported citations are flagged.
-- DNS rebinding is not fully mitigated (resolution is checked at validation
-  time, not pinned per request).
-- No concurrency by design; assessments run serially.
-- This is a project verification baseline, not a formal security audit or
-  compliance certification.
+Private project. Not a penetration testing tool — bounded passive reconnaissance only.
