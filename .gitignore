@@ -1,4 +1,17 @@
-DevLogs.md
+DevLogs
 .env
 .venv
 cmd.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Testing
+.pytest_cache/
+
+# Application outputs
+mantis.log
+reports/
+*.db

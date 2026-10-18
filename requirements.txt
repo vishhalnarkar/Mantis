@@ -1,11 +1,5 @@
-typer
 rich
-fastapi
-uvicorn[standard]
-pydantic
 requests
 python-dotenv
-pandas
 pytest
-groq
 openai

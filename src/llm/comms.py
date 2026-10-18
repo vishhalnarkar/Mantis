@@ -1,22 +1,38 @@
-import os
+"""LLM communication module.
 
-from dotenv import load_dotenv
+Talks to Gemini through the OpenAI-compatible endpoint. The client is
+created lazily so that importing this module never fails, even when
+credentials are missing.
+"""
+
 from openai import OpenAI
 
+from config import config
 from logger import get_logger, console
-
-load_dotenv()
 
 log = get_logger("llm.comms")
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL = os.getenv("GEMINI_MODEL")
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+REQUEST_TIMEOUT = 30.0
 
-client = OpenAI(
-    api_key=API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-    timeout=30.0,
-)
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    """Return a configured OpenAI client, creating it on first use."""
+    global _client
+    if _client is None:
+        if not config.gemini.is_configured:
+            raise RuntimeError(
+                "Gemini is not configured. Set GEMINI_API_KEY and GEMINI_MODEL "
+                "in your .env file (see .env.example)."
+            )
+        _client = OpenAI(
+            api_key=config.gemini.api_key,
+            base_url=GEMINI_BASE_URL,
+            timeout=REQUEST_TIMEOUT,
+        )
+    return _client
 
 
 def send_message(messages: list) -> str:
@@ -24,13 +40,16 @@ def send_message(messages: list) -> str:
     if not messages:
         raise ValueError("Messages cannot be empty.")
 
-    log.info("Sending request to model: %s", MODEL)
+    client = _get_client()
+    model = config.gemini.model
+
+    log.info("Sending request to model: %s", model)
     log.debug("Message count: %d", len(messages))
 
     try:
         with console.status("[accent]Thinking...[/]", spinner="dots"):
             response = client.chat.completions.create(
-                model=MODEL,
+                model=model,
                 messages=messages,
             )
 
